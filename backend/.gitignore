@@ -1,0 +1,27 @@
+# Environment Variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Local Logs
+*.log
+backend_live.log
+backend.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env/
+build/
+dist/
+
+# Node/Vite (if any in this dir)
+node_modules/
+dist/
+.DS_Store

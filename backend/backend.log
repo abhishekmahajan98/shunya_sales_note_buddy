@@ -1,13 +1,31 @@
-/Users/abhishekmahajan/Documents/projects/shunya_sales_note_buddy/backend/app/audio_utils.py:4: FutureWarning: 
-
-All support for the `google.generativeai` package has ended. It will no longer be receiving 
-updates or bug fixes. Please switch to the `google.genai` package as soon as possible.
-See README for more details:
-
-https://github.com/google-gemini/deprecated-generative-ai-python/blob/main/README.md
-
-  import google.generativeai as genai
-INFO:     Started server process [48362]
+INFO:     Started server process [68822]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:61402 - "WebSocket /api/ws/debrief/session-123" [accepted]
+DEBUG: Starting stream_gemini_live for session-123
+DEBUG: Attempting to connect to models/gemini-3.1-flash-live-preview...
+INFO:     connection open
+CRITICAL: stream_gemini_live failed to initialize:
+Traceback (most recent call last):
+  File "/Users/abhishekmahajan/Documents/projects/shunya_sales_note_buddy/backend/app/live_session.py", line 96, in stream_gemini_live
+    async with client.aio.live.connect(model=MODEL_ID, config=config) as gemini_session:
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/google/genai/live.py", line 1101, in connect
+    async with ws_connect(
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/websockets/asyncio/client.py", line 590, in __aenter__
+    return await self
+           ^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/websockets/asyncio/client.py", line 546, in __await_impl__
+    await self.connection.handshake(
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/websockets/asyncio/client.py", line 115, in handshake
+    raise self.protocol.handshake_exc
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/websockets/client.py", line 327, in parse
+    self.process_response(response)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/websockets/client.py", line 144, in process_response
+    raise InvalidStatus(response)
+websockets.exceptions.InvalidStatus: server rejected WebSocket connection: HTTP 404
+
+INFO:     connection closed

@@ -11,10 +11,10 @@ from app.schemas import SalesDebriefData
 
 load_dotenv()
 
-# Switching to the industry-standard stable model for Live Multimodal
-MODEL_ID = "models/gemini-2.0-flash-exp"
+MODEL_ID = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
+if not MODEL_ID.startswith("models/"):
+    MODEL_ID = f"models/{MODEL_ID}"
 
-# Initialize the GenAI client
 client = genai.Client(
     api_key=os.getenv("GOOGLE_API_KEY"),
     http_options={'api_version': 'v1beta'}
@@ -25,30 +25,37 @@ def save_crm_data(
     portfolio_sentiment: str = None,
     flight_risk: str = None,
     macro_concerns: list[str] = None,
-    next_steps: str = None
+    next_steps: str = None,
+    extensive_notes: str = None
 ):
-    """
-    Saves structured CRM data extracted from the sales debrief conversation.
-    """
     data = {
         "client_type": client_type,
         "portfolio_sentiment": portfolio_sentiment,
         "flight_risk": flight_risk,
         "macro_concerns": macro_concerns,
-        "next_steps": next_steps
+        "next_steps": next_steps,
+        "extensive_notes": extensive_notes
     }
     return {k: v for k, v in data.items() if v is not None}
 
-async def stream_gemini_live(user_ws, session_id, on_extraction):
-    """
-    Bridge between the Client WebSocket and Gemini Multimodal Live API.
-    Refactored for maximum resilience with traceback tracking.
-    """
-    print(f"DEBUG: Starting stream_gemini_live for {session_id}", flush=True)
-    config = types.LiveConnectConfig(
-        tools=[{
-            "function_declarations": [
-                {
+async def stream_gemini_live(user_ws, session_id, on_extraction, on_message_completed, history=None):
+    from asyncio import Queue
+    from fastapi import WebSocketDisconnect
+    
+    user_outbox = Queue()
+    active_gemini_session = [None]
+    setup_complete_event = asyncio.Event()
+
+    # Shared turn accumulation buffers
+    session_state = {
+        "current_user_text": "",
+        "current_agent_text": ""
+    }
+
+    async def get_config():
+        return {
+            "tools": [{
+                "function_declarations": [{
                     "name": "save_crm_data",
                     "description": "Saves structured CRM data extracted from the conversation.",
                     "parameters": {
@@ -58,132 +65,186 @@ async def stream_gemini_live(user_ws, session_id, on_extraction):
                             "portfolio_sentiment": {"type": "string", "description": "Client's feeling on portfolio"},
                             "flight_risk": {"type": "string", "description": "Risk level (Low/Medium/High)"},
                             "macro_concerns": {"type": "array", "items": {"type": "string"}},
-                            "next_steps": {"type": "string", "description": "Next actions"}
+                            "next_steps": {"type": "string", "description": "Next actions"},
+                            "extensive_notes": {"type": "string", "description": "DETAILED, comprehensive notes. Do NOT summarize too much. Append new information to previous notes to maintain a full record."}
                         }
                     }
+                }]
+            }],
+            "system_instruction": {
+                "parts": [{"text": (
+                    "You are a meticulous junior analyst at a boutique equities firm, debriefing a senior salesperson. "
+                    "Your MISSION is to capture EVERY detail of the salesperson's report in real-time. "
+                    "\n\n"
+                    "RULES:\n"
+                    "1. INCREMENTAL UPDATES: Call 'save_crm_data' IMMEDIATELY as soon as you extract any piece of information (e.g. client type, a concern, a next step). Do NOT wait for the end of the conversation.\n"
+                    "2. EXTENSIVE NOTES: Maintain 'extensive_notes' as a living, cumulative record. Whenever you learn something new, call 'save_crm_data' and include the LATEST, complete version of the notes. These notes should be multi-paragraph, detailed, and capture nuances, rants, and specific quotes if possible. "
+                    "3. APPEND DON'T REPLACE: If you learn more details about a field (like macro concerns), append them to the existing list instead of replacing the whole list if it remains relevant.\n"
+                    "4. PERSONA: Be inquisitive, professional, and respectful. Ask follow-up questions to fill in the gaps in the CRM fields.\n"
+                    "5. VERBAL ACKNOWLEDGEMENT: After every 'save_crm_data' call, you MUST briefly verbally acknowledge the data recorded (e.g., 'Got it, a retail client.') and then ask the next question.\n"
+                    "6. PERSISTENCE: Do NOT end the conversation or stop asking questions until ALL fields (client_type, portfolio_sentiment, flight_risk, macro_concerns, next_steps) have been discussed and recorded."
+                )}]
+            },
+            "generation_config": {"response_modalities": ["AUDIO"]},
+            "history_config": {"initial_history_in_client_content": True},
+            "input_audio_transcription": {},
+            "output_audio_transcription": {},
+            "realtime_input_config": {
+                "automatic_activity_detection": {
+                    "disabled": False,
+                    "silence_duration_ms": 1000,
                 }
-            ]
-        }],
-        system_instruction=types.Content(
-            parts=[types.Part(text=(
-                "You are a junior analyst at a boutique long-only equities firm, debriefing a senior salesperson. "
-                "Your goal is to extract structured CRM data (client type, sentiment, flight risk, macro concerns, next steps). "
-                "Keep your responses brief and natural. Call the 'save_crm_data' tool whenever you hear relevant info."
-            ))]
-        ),
-        generation_config=types.GenerationConfig(
-             response_modalities=["AUDIO"]
-        )
-    )
+            }
+        }
 
-    try:
-        print(f"DEBUG: Attempting to connect to {MODEL_ID}...", flush=True)
-        async with client.aio.live.connect(model=MODEL_ID, config=config) as gemini_session:
-            print(f"DEBUG: Connected to Gemini Live for session {session_id}", flush=True)
+    async def task_from_browser():
+        try:
+            while True:
+                msg = await user_ws.receive_json()
+                await user_outbox.put(msg)
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            print(f"DEBUG: Browser read error: {e}", flush=True)
 
-            async def receive_from_gemini():
-                """Task to handle incoming messages from Gemini."""
-                try:
-                    async for message in gemini_session.receive():
+    async def gemini_receiver(curr_session):
+        try:
+            async for message in curr_session.receive():
+                if not setup_complete_event.is_set():
+                    setup_complete_event.set()
+
+                if message.server_content:
+                    sc = message.server_content
+                    if sc.interrupted: 
+                        await user_ws.send_json({"type": "interrupted"})
+                        session_state["current_agent_text"] = ""
+
+                    if sc.input_transcription:
+                        it = sc.input_transcription
+                        session_state["current_user_text"] = it.text 
+                        await user_ws.send_json({
+                            "type": "input_transcript", 
+                            "text": it.text, 
+                            "finished": bool(getattr(it, "finished", False))
+                        })
+                        if bool(getattr(it, "finished", False)): 
+                            await on_message_completed("user", it.text)
+                            session_state["current_user_text"] = ""
+
+                    if sc.output_transcription:
+                        ot = sc.output_transcription
+                        session_state["current_agent_text"] = ot.text
+                        await user_ws.send_json({
+                            "type": "output_transcript", 
+                            "text": ot.text, 
+                            "finished": bool(getattr(ot, "finished", False))
+                        })
+                        if bool(getattr(ot, "finished", False)): 
+                            await on_message_completed("agent", ot.text)
+                            session_state["current_agent_text"] = ""
+
+                    if sc.model_turn:
+                        for part in sc.model_turn.parts:
+                            if part.inline_data:
+                                b64 = base64.b64encode(part.inline_data.data).decode('utf-8')
+                                await user_ws.send_json({"type": "audio", "data": b64})
+                    
+                    if sc.turn_complete:
+                        if session_state["current_user_text"]:
+                            await user_ws.send_json({
+                                "type": "input_transcript", 
+                                "text": session_state["current_user_text"], 
+                                "finished": True
+                            })
+                            await on_message_completed("user", session_state["current_user_text"])
+                            session_state["current_user_text"] = ""
+                        if session_state["current_agent_text"]:
+                            await user_ws.send_json({
+                                "type": "output_transcript", 
+                                "text": session_state["current_agent_text"], 
+                                "finished": True
+                            })
+                            await on_message_completed("agent", session_state["current_agent_text"])
+                            session_state["current_agent_text"] = ""
+
+                if message.tool_call:
+                    # Force finish the user's input since the model decided to act on it
+                    if session_state["current_user_text"]:
+                        await user_ws.send_json({
+                            "type": "input_transcript", 
+                            "text": session_state["current_user_text"], 
+                            "finished": True
+                        })
+                        await on_message_completed("user", session_state["current_user_text"])
+                        session_state["current_user_text"] = ""
+
+                    f_res = []
+                    for call in message.tool_call.function_calls:
+                        if call.name == "save_crm_data":
+                            ext = save_crm_data(**call.args)
+                            # on_extraction now returns the list of missing fields from the DB/state
+                            missing = await on_extraction(ext)
+                            f_res.append(types.FunctionResponse(
+                                id=call.id, 
+                                name=call.name, 
+                                response={
+                                    "status": "success", 
+                                    "recorded_fields": list(ext.keys()),
+                                    "remaining_missing_fields": missing
+                                }
+                            ))
+                    if f_res: 
+                        await curr_session.send(input=types.LiveClientContent(
+                            turns=[types.Content(
+                                role="user",
+                                parts=[types.Part(function_response=fr) for fr in f_res]
+                            )]
+                        ))
+        except Exception as e:
+            print(f"DEBUG: Receiver error: {e}", flush=True)
+
+    async def task_to_gemini():
+        while True:
+            try:
+                print(f"DEBUG: Internal Re-connector: Starting for {session_id}", flush=True)
+                async with client.aio.live.connect(model=MODEL_ID, config=await get_config()) as gemini_session:
+                    active_gemini_session[0] = gemini_session
+                    setup_complete_event.clear()
+                    
+                    receiver_task = asyncio.create_task(gemini_receiver(gemini_session))
+                    
+                    # Handshake settlement
+                    await asyncio.sleep(0.2)
+                    if not setup_complete_event.is_set():
+                        # Force trigger by sending history or empty content
+                        pass
+
+                    if history:
+                        valid_turns = []
+                        for item in history:
+                            text = item.get("text", "").strip()
+                            if not text: continue
+                            role = "user" if item["role"] == "user" else "model"
+                            if not valid_turns and role == "model": continue
+                            valid_turns.append(types.Content(role=role, parts=[types.Part.from_text(text=text)]))
+                        
+                        if valid_turns:
+                            print(f"DEBUG: RE-ANCHORING ({len(valid_turns)} turns)", flush=True)
+                            await gemini_session.send_client_content(turns=valid_turns, turn_complete=True)
+
+                    while not receiver_task.done():
                         try:
-                            if message.server_content is not None:
-                                if message.server_content.interrupted:
-                                    print("DEBUG: Gemini says INTERRUPTED", flush=True)
-                                    await user_ws.send_json({"type": "interrupted"})
-                                
-                                model_turn = message.server_content.model_turn
-                                if model_turn:
-                                    for part in model_turn.parts:
-                                        if part.inline_data:
-                                            audio_b64 = base64.b64encode(part.inline_data.data).decode('utf-8')
-                                            await user_ws.send_json({"type": "audio", "data": audio_b64})
-                                        if part.text:
-                                            print(f"DEBUG: Gemini Text: {part.text}", flush=True)
-                                            await user_ws.send_json({"type": "transcript", "role": "agent", "text": part.text})
+                            msg = await asyncio.wait_for(user_outbox.get(), timeout=0.1)
+                            if "audio" in msg:
+                                await gemini_session.send_realtime_input(audio={"mime_type": "audio/pcm;rate=16000", "data": base64.b64decode(msg["audio"])})
+                            elif "text" in msg:
+                                await gemini_session.send(input=msg['text'], end_of_turn=True)
+                        except asyncio.TimeoutError:
+                            continue
+            except Exception as e:
+                print(f"DEBUG: Bridge loop flicker ({e}). Retrying...", flush=True)
+                await asyncio.sleep(1)
 
-                            if message.tool_call:
-                                print(f"DEBUG: Tool Call detected: {message.tool_call}", flush=True)
-                                for call in message.tool_call.function_calls:
-                                    if call.name == "save_crm_data":
-                                        try:
-                                            extracted = save_crm_data(**call.args)
-                                            print(f"DEBUG: Extraction sync: {extracted}", flush=True)
-                                            await on_extraction(extracted)
-                                            
-                                            await gemini_session.send_tool_response(
-                                                function_responses=[{
-                                                    "id": call.id,
-                                                    "name": call.name,
-                                                    "response": {"result": extracted}
-                                                }]
-                                            )
-                                            print(f"DEBUG: Sent tool response back for {call.id}", flush=True)
-                                        except Exception as te:
-                                            print(f"DEBUG: Tool handling error:\n{traceback.format_exc()}", flush=True)
-                            
-                            await asyncio.sleep(0.01)
-                        except Exception as inner_e:
-                            print(f"DEBUG: Message processing error:\n{traceback.format_exc()}", flush=True)
-                            break
-                            
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    print(f"DEBUG: receiver task died:\n{traceback.format_exc()}", flush=True)
-
-            async def send_to_gemini():
-                """Task to handle outgoing messages from User to Gemini."""
-                audio_count = 0
-                try:
-                    from fastapi import WebSocketDisconnect
-                    while True:
-                        try:
-                            message = await user_ws.receive_json()
-                            if "audio" in message:
-                                audio_count += 1
-                                if audio_count % 100 == 0:
-                                    print(f"DEBUG: Proxied {audio_count} audio chunks from User", flush=True)
-                                
-                                audio_bytes = base64.b64decode(message["audio"])
-                                await gemini_session.send_realtime_input(
-                                    audio={"mime_type": "audio/pcm;rate=16000", "data": audio_bytes}
-                                )
-                            elif message.get("type") == "end_turn":
-                                print(f"DEBUG: User clicked STOP. Sending forced turn signal.", flush=True)
-                                # 3.1 Preview requires a non-empty turns list to avoid 1007 error
-                                await gemini_session.send_client_content(
-                                    turns=[types.Content(role="user", parts=[types.Part(text=".")])],
-                                    turn_complete=True
-                                )
-                            elif "text" in message:
-                                print(f"DEBUG: User typing: {message['text']}", flush=True)
-                                await gemini_session.send_client_content(
-                                    turns=[types.Content(role="user", parts=[types.Part(text=message['text'])])],
-                                    turn_complete=True
-                                )
-                        except WebSocketDisconnect as d:
-                            print(f"DEBUG: Browser disconnected (Code {d.code})", flush=True)
-                            break
-                        except Exception as inner_e:
-                            print(f"DEBUG: send loop error:\n{traceback.format_exc()}", flush=True)
-                            break
-                        await asyncio.sleep(0.01)
-                except Exception as e:
-                    print(f"DEBUG: sender task died:\n{traceback.format_exc()}", flush=True)
-
-            # Start tasks independently with names
-            rt = asyncio.create_task(receive_from_gemini(), name="GeminiReceiver")
-            st = asyncio.create_task(send_to_gemini(), name="UserSender")
-
-            # Wait for either to finish
-            done, pending = await asyncio.wait([rt, st], return_when=asyncio.FIRST_COMPLETED)
-            
-            # Diagnostic for which one finished
-            for finished in done:
-                print(f"DEBUG: Task {finished.get_name()} finished session {session_id}.", flush=True)
-
-            for t in pending: t.cancel()
-            print(f"DEBUG: Session {session_id} cleanup complete.", flush=True)
-
-    except Exception as e:
-        print(f"CRITICAL: stream_gemini_live failed to initialize:\n{traceback.format_exc()}", flush=True)
+    tasks = [asyncio.create_task(task_from_browser()), asyncio.create_task(task_to_gemini())]
+    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for t in tasks: t.cancel()

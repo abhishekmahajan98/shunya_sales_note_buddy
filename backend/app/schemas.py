@@ -9,6 +9,7 @@ class SalesDebriefData(BaseModel):
     flight_risk: Optional[str] = Field(description="Low, Medium, High - with brief reasoning")
     macro_concerns: Optional[List[str]] = Field(description="Any specific rants or concerns about the macro environment")
     next_steps: Optional[str] = Field(description="Follow-up actions required by the sales team")
+    extensive_notes: Optional[str] = Field(description="Comprehensive, detailed notes capturing the entire conversation context and nuances.")
 
 
 class AgentState(TypedDict):
