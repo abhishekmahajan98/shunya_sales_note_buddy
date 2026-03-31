@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+langgraph
+google-genai
+pydantic
+httpx
+python-dotenv
+python-multipart
+tenacity
+# google-generativeai # legacy, keeping for any dependencies but will use google-genai mainly
