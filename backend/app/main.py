@@ -8,7 +8,7 @@ import os
 import json
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(override=True)
 
 from app.live_session import stream_gemini_live
 from app.audio_processor import process_audio_unary

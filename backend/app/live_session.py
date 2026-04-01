@@ -9,7 +9,7 @@ from google.genai import types
 from dotenv import load_dotenv
 from app.schemas import SalesDebriefData
 
-load_dotenv()
+load_dotenv(override=True)
 
 MODEL_ID = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
 if not MODEL_ID.startswith("models/"):
@@ -19,6 +19,42 @@ client = genai.Client(
     api_key=os.getenv("GOOGLE_API_KEY"),
     http_options={'api_version': 'v1beta'}
 )
+
+def sanitize_and_merge_history(raw_history):
+    """
+    Ensures history starts with a 'user' turn and merges any 
+    consecutive turns of the same role to prevent 1007 errors.
+    """
+    if not raw_history:
+        return []
+
+    merged = []
+    for h in raw_history:
+        role = "user" if h.get("role") == "user" else "model"
+        text = h.get("text", "").strip()
+        if not text: continue
+
+        if not merged:
+            # 1. History must start with a 'user' turn. Drop leading model turns.
+            if role != "user":
+                continue
+            merged.append({"role": role, "text": text})
+        elif merged[-1]["role"] == role:
+            # 2. Merge consecutive turns of the same role.
+            merged[-1]["text"] += f"\n\n{text}"
+        else:
+            # 3. Normal alternating turn.
+            merged.append({"role": role, "text": text})
+            
+    # Map the sanitized list to SDK types
+    valid_turns = [
+        types.Content(
+            role=turn["role"], 
+            parts=[types.Part.from_text(text=turn["text"])]
+        ) for turn in merged
+    ]
+    
+    return valid_turns
 
 def save_crm_data(
     client_type: str = None,
@@ -61,12 +97,12 @@ async def stream_gemini_live(user_ws, session_id, on_extraction, on_message_comp
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
-                            "client_type": {"type": "string", "description": "Retail or Institutional"},
-                            "portfolio_sentiment": {"type": "string", "description": "Client's feeling on portfolio"},
-                            "flight_risk": {"type": "string", "description": "Risk level (Low/Medium/High)"},
-                            "macro_concerns": {"type": "array", "items": {"type": "string"}},
-                            "next_steps": {"type": "string", "description": "Next actions"},
-                            "extensive_notes": {"type": "string", "description": "DETAILED, comprehensive notes. Do NOT summarize too much. Append new information to previous notes to maintain a full record."}
+                            "client_type": {"type": "string", "description": "Retail or Institutional. Omit if unknown."},
+                            "portfolio_sentiment": {"type": "string", "description": "Client's feeling on portfolio. Omit if unknown."},
+                            "flight_risk": {"type": "string", "description": "Risk level (Low/Medium/High). Omit if unknown."},
+                            "macro_concerns": {"type": "array", "items": {"type": "string"}, "description": "Specific rants or concerns. Omit if none."},
+                            "next_steps": {"type": "string", "description": "Next actions. Omit if unknown."},
+                            "extensive_notes": {"type": "string", "description": "DETAILED, comprehensive notes about the conversation so far."}
                         }
                     }
                 }]
@@ -78,11 +114,12 @@ async def stream_gemini_live(user_ws, session_id, on_extraction, on_message_comp
                     "\n\n"
                     "RULES:\n"
                     "1. INCREMENTAL UPDATES: Call 'save_crm_data' IMMEDIATELY as soon as you extract any piece of information (e.g. client type, a concern, a next step). Do NOT wait for the end of the conversation.\n"
-                    "2. EXTENSIVE NOTES: Maintain 'extensive_notes' as a living, cumulative record. Whenever you learn something new, call 'save_crm_data' and include the LATEST, complete version of the notes. These notes should be multi-paragraph, detailed, and capture nuances, rants, and specific quotes if possible. "
-                    "3. APPEND DON'T REPLACE: If you learn more details about a field (like macro concerns), append them to the existing list instead of replacing the whole list if it remains relevant.\n"
-                    "4. PERSONA: Be inquisitive, professional, and respectful. Ask follow-up questions to fill in the gaps in the CRM fields.\n"
-                    "5. VERBAL ACKNOWLEDGEMENT: After every 'save_crm_data' call, you MUST briefly verbally acknowledge the data recorded (e.g., 'Got it, a retail client.') and then ask the next question.\n"
-                    "6. PERSISTENCE: Do NOT end the conversation or stop asking questions until ALL fields (client_type, portfolio_sentiment, flight_risk, macro_concerns, next_steps) have been discussed and recorded."
+                    "2. NO HALLUCINATIONS: Do NOT use 'Unknown', 'N/A', 'Placeholder', or dummy values. If a field hasn't been discussed yet, omit it from the 'save_crm_data' call. Only provide fields you have high confidence in.\n"
+                    "3. EXTENSIVE NOTES: Maintain 'extensive_notes' as a living, cumulative record. Whenever you learn something new, call 'save_crm_data' and include the LATEST, complete version of the notes. These notes should be multi-paragraph, detailed, and capture nuances, rants, and specific quotes if possible. "
+                    "4. APPEND DON'T REPLACE: If you learn more details about a field (like macro concerns), append them to the existing list instead of replacing the whole list if it remains relevant.\n"
+                    "5. PERSONA: Be inquisitive, professional, and respectful. Ask follow-up questions to fill in the gaps in the CRM fields.\n"
+                    "6. VERBAL ACKNOWLEDGEMENT: After every 'save_crm_data' call, you MUST briefly verbally acknowledge the data recorded (e.g., 'Got it, a retail client.') and then ask the next question.\n"
+                    "7. PERSISTENCE: Do NOT end the conversation or stop asking questions until ALL fields (client_type, portfolio_sentiment, flight_risk, macro_concerns, next_steps) have been discussed and recorded."
                 )}]
             },
             "generation_config": {"response_modalities": ["AUDIO"]},
@@ -194,12 +231,8 @@ async def stream_gemini_live(user_ws, session_id, on_extraction, on_message_comp
                                 }
                             ))
                     if f_res: 
-                        await curr_session.send(input=types.LiveClientContent(
-                            turns=[types.Content(
-                                role="user",
-                                parts=[types.Part(function_response=fr) for fr in f_res]
-                            )]
-                        ))
+                        # Official SDK method handles packaging and floor yield
+                        await curr_session.send_tool_response(function_responses=f_res)
         except Exception as e:
             print(f"DEBUG: Receiver error: {e}", flush=True)
 
@@ -220,17 +253,15 @@ async def stream_gemini_live(user_ws, session_id, on_extraction, on_message_comp
                         pass
 
                     if history:
-                        valid_turns = []
-                        for item in history:
-                            text = item.get("text", "").strip()
-                            if not text: continue
-                            role = "user" if item["role"] == "user" else "model"
-                            if not valid_turns and role == "model": continue
-                            valid_turns.append(types.Content(role=role, parts=[types.Part.from_text(text=text)]))
+                        # FIX: Sanitize the history before sending
+                        valid_turns = sanitize_and_merge_history(history)
                         
                         if valid_turns:
                             print(f"DEBUG: RE-ANCHORING ({len(valid_turns)} turns)", flush=True)
-                            await gemini_session.send_client_content(turns=valid_turns, turn_complete=True)
+                            await gemini_session.send(input=types.LiveClientContent(
+                                turns=valid_turns,
+                                turn_complete=True
+                            ))
 
                     while not receiver_task.done():
                         try:

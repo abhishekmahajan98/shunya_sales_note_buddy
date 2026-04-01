@@ -5,7 +5,7 @@ from google.genai import types
 from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-load_dotenv()
+load_dotenv(override=True)
 
 # Use the benchmark stable model for unary audio processing
 MODEL_ID = "gemini-2.0-flash"
