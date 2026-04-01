@@ -1,12 +1,14 @@
-# Railway deployment config
 [build]
 builder = "nixpacks"
-buildCommand = "pip install -e ."
+# Option A: If you just want to install requirements (Nixpacks usually does this anyway)
+# buildCommand = "pip install -r requirements.txt"
+# Option B: Leave it empty if you don't have a specific build step
+buildCommand = "echo 'Build phase complete'"
 
 [deploy]
 startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
-healthcheckPath = "/health"
-healthcheckTimeout = 30
+healthCheckPath = "/health"
+healthCheckTimeout = 30
 restartPolicyType = "on_failure"
 
 [[services]]
