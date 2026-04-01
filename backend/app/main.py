@@ -1,4 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
@@ -235,3 +238,21 @@ async def sync_crm(payload: dict):
     # Mock CRM sync endpoint
     print(f"Syncing to CRM: {payload}")
     return {"status": "success", "message": "Synced to CRM"}
+
+# ── Frontend Static Serving ────────────────────────────────────────────────────
+
+# Serve frontend static files at root path
+# This must be LAST so API routes take precedence
+frontend_dist = Path(__file__).parent / "static"
+
+if frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="static")
+
+    # Catch-all route for any non-API routes to serve index.html (React Router)
+    @app.get("/{full_path:path}")
+    async def serve_react_app(full_path: str):
+        # If the path is under /api, return 404
+        if full_path.startswith("api"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="API route not found")
+        return FileResponse(frontend_dist / "index.html")

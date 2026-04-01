@@ -92,7 +92,7 @@ function App() {
     setCurrentSessionId(null);
   };
 
-  const handleEndDebrief = (data: ExtractionData, finalTranscript: Message[]) => {
+  const handleEndDebrief = (_data: ExtractionData, finalTranscript: Message[]) => {
     setTranscript(finalTranscript);
     setView('review');
   };
