@@ -1,14 +1,14 @@
 [build]
 builder = "NIXPACKS"
-# This is the magic line that tells Nixpacks to look inside /backend
+# This tells Railway to ignore the root and look in /backend for requirements.txt
 root = "backend"
 
 [deploy]
-# Since 'root' is set to backend, we don't need 'cd backend' anymore
-startCommand = "PYTHONPATH=. uvicorn app.main:app --host 0.0.0.0 --port $PORT"
-restartPolicyType = "ON_FAILURE"
+# Note: Since 'root' is set to 'backend', the path is relative to /backend
+# If your code is in /backend/app/main.py, the command should be:
+startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
 healthCheckPath = "/api/health"
-healthCheckTimeout = 100
+restartPolicyType = "ON_FAILURE"
 
 [deploy.env]
 PYTHONPATH = "."
