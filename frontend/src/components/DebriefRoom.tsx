@@ -295,7 +295,7 @@ export default function DebriefRoom({
       <div className="flex justify-between w-full items-center mb-8">
         <div>
           <h2 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">
-            RIG Sales Debrief <span className="text-sm font-normal text-slate-500 ml-2">v3.1 Live</span>
+            Shunya Note Buddy <span className="text-sm font-normal text-slate-500 ml-2">v3.1 Live</span>
           </h2>
           <p className="text-sm text-slate-400 flex items-center gap-2 mt-1">
              <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}`}></span>

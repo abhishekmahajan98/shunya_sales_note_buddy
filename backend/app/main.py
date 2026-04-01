@@ -20,7 +20,7 @@ from app.auth import sign_up, sign_in, get_current_user, supabase
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 
-app = FastAPI(title="RIG Sales Debrief Agent")
+app = FastAPI(title="Shunya Sales Note Buddy")
 
 app.add_middleware(
     CORSMiddleware,

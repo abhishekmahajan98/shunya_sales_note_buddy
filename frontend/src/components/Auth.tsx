@@ -59,7 +59,7 @@ export default function Auth({ onLogin }: AuthProps) {
             <Sparkles className="w-8 h-8 text-indigo-400 group-hover:rotate-12 transition-transform" />
           </div>
           <h1 className="text-4xl font-bold text-white mb-2 tracking-tight">
-            RIG <span className="text-indigo-400">Assistant</span>
+            Shunya <span className="text-indigo-400">Note Buddy</span>
           </h1>
           <p className="text-slate-400 font-medium tracking-wide text-sm uppercase">Sales Intelligence Suite</p>
         </div>

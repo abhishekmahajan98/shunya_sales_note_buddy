@@ -20,7 +20,7 @@ interface Message {
 
 function App() {
   const [user, setUser] = useState<any>(null);
-  const [token, setToken] = useState<string | null>(localStorage.getItem('rig_token'));
+  const [token, setToken] = useState<string | null>(localStorage.getItem('shunya_token'));
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isAutoConnecting, setIsAutoConnecting] = useState(false);
   const [view, setView] = useState<'debrief' | 'review'>('debrief');
@@ -31,7 +31,7 @@ function App() {
 
   useEffect(() => {
     const checkAuth = async () => {
-      const storedToken = localStorage.getItem('rig_token');
+      const storedToken = localStorage.getItem('shunya_token');
       if (!storedToken) {
         setLoading(false);
         return;
@@ -47,7 +47,7 @@ function App() {
           setToken(storedToken);
           // We don't auto-start a session anymore; the user triggers it via "Connect"
         } else {
-          localStorage.removeItem('rig_token');
+          localStorage.removeItem('shunya_token');
           setToken(null);
         }
       } catch (err) {
@@ -80,13 +80,13 @@ function App() {
   };
 
   const handleLogin = (newToken: string, newUser: any) => {
-    localStorage.setItem('rig_token', newToken);
+    localStorage.setItem('shunya_token', newToken);
     setToken(newToken);
     setUser(newUser);
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('rig_token');
+    localStorage.removeItem('shunya_token');
     setToken(null);
     setUser(null);
     setCurrentSessionId(null);
@@ -140,7 +140,7 @@ function App() {
                <div className="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center border border-indigo-500/30">
                   <Sparkles className="w-4 h-4 text-indigo-400" />
                </div>
-               <h1 className="text-lg font-bold tracking-wide">RIG <span className="text-indigo-400">Assistant</span></h1>
+                <h1 className="text-lg font-bold tracking-wide">Shunya <span className="text-indigo-400">Note Buddy</span></h1>
             </div>
 
             <div className="flex items-center gap-4">
