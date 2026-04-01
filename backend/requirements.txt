@@ -2,9 +2,13 @@ fastapi
 uvicorn
 langgraph
 google-genai
+google-generativeai
+google-cloud-texttospeech
+langchain-core
+langchain-google-genai
 pydantic
 httpx
 python-dotenv
 python-multipart
 tenacity
-# google-generativeai # legacy, keeping for any dependencies but will use google-genai mainly
+supabase
