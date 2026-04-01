@@ -81,6 +81,17 @@ export default function DebriefRoom({
   }, [messages, inputTranscript, outputTranscript]);
 
   useEffect(() => {
+    if (sessionId) {
+      setMessages([]);
+      setInputTranscript("");
+      setOutputTranscript("");
+      messagesRef.current = [];
+      inputTranscriptRef.current = "";
+      outputTranscriptRef.current = "";
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
     if (autoStart && sessionId && !isConnected && !isConnecting) {
       startSession();
     }
@@ -88,6 +99,20 @@ export default function DebriefRoom({
       stopSession();
     };
   }, [autoStart, sessionId]);
+  
+  // Pre-load audio worklet once
+  useEffect(() => {
+    const preLoad = async () => {
+      try {
+        const dummyCtx = new AudioContext();
+        await dummyCtx.audioWorklet.addModule('/pcm-worklet.js');
+        await dummyCtx.close();
+      } catch (e) {
+        console.error("Worklet pre-load failed:", e);
+      }
+    };
+    preLoad();
+  }, []);
   
   const startSession = async () => {
     if (isConnected || isConnecting) return;

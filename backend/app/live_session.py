@@ -247,7 +247,7 @@ async def stream_gemini_live(user_ws, session_id, on_extraction, on_message_comp
                     receiver_task = asyncio.create_task(gemini_receiver(gemini_session))
                     
                     # Handshake settlement
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(0.05)
                     if not setup_complete_event.is_set():
                         # Force trigger by sending history or empty content
                         pass

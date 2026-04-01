@@ -89,22 +89,33 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str =
 
     # Hydrate session state from DB if not already in memory
     if session_id not in sessions:
-        # Fetch Extraction data
-        ext_res = supabase.table("extractions").select("data").eq("session_id", session_id).execute()
-        extracted_data = ext_res.data[0]["data"] if ext_res.data else {}
-        
-        # Fetch Message history
-        msg_res = supabase.table("messages").select("role", "content").eq("session_id", session_id).order("created_at").execute()
-        history = [{"role": m["role"], "text": m["content"]} for m in msg_res.data] if msg_res.data else []
-        
-        all_fields = list(SalesDebriefData.model_fields.keys())
-        missing = [f for f in all_fields if f not in extracted_data or not extracted_data[f]]
+        # Fetch Extraction data and Message history in parallel
+        async def fetch_session_data():
+            ext_task = asyncio.to_thread(lambda: supabase.table("extractions").select("data").eq("session_id", session_id).execute())
+            msg_task = asyncio.to_thread(lambda: supabase.table("messages").select("role", "content").eq("session_id", session_id).order("created_at").execute())
+            return await asyncio.gather(ext_task, msg_task)
 
-        sessions[session_id] = {
-            "extracted_data": extracted_data,
-            "missing_fields": missing,
-            "history": history
-        }
+        try:
+            ext_res, msg_res = await fetch_session_data()
+            
+            extracted_data = ext_res.data[0]["data"] if ext_res.data else {}
+            history = [{"role": m["role"], "text": m["content"]} for m in msg_res.data] if msg_res.data else []
+            
+            all_fields = list(SalesDebriefData.model_fields.keys())
+            missing = [f for f in all_fields if f not in extracted_data or not extracted_data[f]]
+
+            sessions[session_id] = {
+                "extracted_data": extracted_data,
+                "missing_fields": missing,
+                "history": history
+            }
+        except Exception as e:
+            print(f"Error hydrating session {session_id}: {e}")
+            sessions[session_id] = {
+                "extracted_data": {},
+                "missing_fields": list(SalesDebriefData.model_fields.keys()),
+                "history": []
+            }
     
     state = sessions[session_id]
     

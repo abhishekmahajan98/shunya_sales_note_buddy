@@ -162,7 +162,6 @@ function App() {
          <div className="flex-1 overflow-hidden">
             {view === 'debrief' ? (
               <DebriefRoom 
-                key={currentSessionId || 'empty'} 
                 onEndDebrief={handleEndDebrief} 
                 onExtractionUpdate={handleExtractionUpdate} 
                 token={token}
