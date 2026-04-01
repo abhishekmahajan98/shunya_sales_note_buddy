@@ -117,7 +117,8 @@ export default function DebriefRoom({
   const startSession = async () => {
     if (isConnected || isConnecting) return;
     setIsConnecting(true);
-    const ws = new WebSocket(`ws://localhost:8000/api/ws/debrief/${sessionId}?token=${token}`);
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws/debrief/${sessionId}?token=${token}`);
     wsRef.current = ws;
 
     ws.onopen = async () => {

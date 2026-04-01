@@ -38,7 +38,7 @@ function App() {
       }
 
       try {
-        const res = await fetch('http://localhost:8000/api/auth/me', {
+        const res = await fetch('/api/auth/me', {
           headers: { 'Authorization': `Bearer ${storedToken}` }
         });
         const data = await res.json();
@@ -62,7 +62,7 @@ function App() {
 
   const startNewSession = async (authToken: string, autoConnect = false) => {
     try {
-      const res = await fetch('http://localhost:8000/api/debrief/session', {
+      const res = await fetch('/api/debrief/session', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${authToken}` }
       });
@@ -104,7 +104,7 @@ function App() {
 
   const syncToCRM = async (finalData: ExtractionData, summary: string) => {
     try {
-      const response = await fetch('http://localhost:8000/api/crm/sync', {
+      const response = await fetch('/api/crm/sync', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',

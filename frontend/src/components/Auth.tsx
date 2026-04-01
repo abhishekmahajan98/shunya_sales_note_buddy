@@ -20,7 +20,7 @@ export default function Auth({ onLogin }: AuthProps) {
 
     const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
     try {
-      const response = await fetch(`http://localhost:8000${endpoint}?email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}`, {
+      const response = await fetch(`${endpoint}?email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}`, {
         method: 'POST',
       });
       const data = await response.json();
