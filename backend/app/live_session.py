@@ -122,7 +122,16 @@ async def stream_gemini_live(user_ws, session_id, on_extraction, on_message_comp
                     "7. PERSISTENCE: Do NOT end the conversation or stop asking questions until ALL fields (client_type, portfolio_sentiment, flight_risk, macro_concerns, next_steps) have been discussed and recorded."
                 )}]
             },
-            "generation_config": {"response_modalities": ["AUDIO"]},
+            "generation_config": {
+                "response_modalities": ["AUDIO"],
+                "speech_config": {
+                    "voice_config": {
+                        "prebuilt_voice_config": {
+                            "voice_name": "Charon"
+                        }
+                    }
+                }
+            },
             "history_config": {"initial_history_in_client_content": True},
             "input_audio_transcription": {},
             "output_audio_transcription": {},
