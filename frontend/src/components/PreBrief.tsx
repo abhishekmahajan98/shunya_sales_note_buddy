@@ -110,7 +110,7 @@ export default function PreBrief({ client, onBack, onStartDebrief, isCreatingSes
           </div>
 
           {/* Question list */}
-          <div className="divide-y" style={{ background: 'rgba(255,255,255,0.015)', divideColor: 'rgba(255,255,255,0.05)' }}>
+          <div className="divide-y divide-white/5" style={{ background: 'rgba(255,255,255,0.015)' }}>
             {questions.map((q, i) => (
               <motion.div
                 key={q.id}

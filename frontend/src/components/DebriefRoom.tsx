@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Square, Activity, Play, ChevronRight, Mic, MicOff, BrainCircuit, Clock } from 'lucide-react';
+import { Square, Activity, Play, ChevronRight, Mic, BrainCircuit, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface Message {
@@ -29,7 +29,7 @@ interface DebriefRoomProps {
 
 // Number of waveform bars
 const WAVEFORM_BARS = 20;
-const WAVEFORM_BARS_SMALL = 12;
+
 
 export default function DebriefRoom({
   onEndDebrief,
@@ -46,7 +46,7 @@ export default function DebriefRoom({
   const [outputTranscript, setOutputTranscript] = useState('');
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0);
-  const [sessionStarted, setSessionStarted] = useState(false);
+
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -88,7 +88,6 @@ export default function DebriefRoom({
   // Timer for elapsed session time
   useEffect(() => {
     if (isConnected) {
-      setSessionStarted(true);
       setElapsedTime(0);
       timerRef.current = setInterval(() => setElapsedTime(t => t + 1), 1000);
     } else {
