@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { Square, Activity, Zap, Play, Info } from 'lucide-react';
+import { Square, Activity, Play, ChevronRight, Mic, MicOff, BrainCircuit, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface Message {
   role: 'user' | 'agent';
   text: string;
   isPartial?: boolean;
+  timestamp?: Date;
 }
 
 interface ExtractionData {
@@ -26,22 +27,27 @@ interface DebriefRoomProps {
   onStartSession?: () => void;
 }
 
-export default function DebriefRoom({ 
-  onEndDebrief, 
-  onExtractionUpdate, 
-  token, 
+// Number of waveform bars
+const WAVEFORM_BARS = 20;
+const WAVEFORM_BARS_SMALL = 12;
+
+export default function DebriefRoom({
+  onEndDebrief,
+  onExtractionUpdate,
+  token,
   sessionId,
   autoStart = false,
   onStartSession
 }: DebriefRoomProps) {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [inputTranscript, setInputTranscript] = useState("");
-  const [outputTranscript, setOutputTranscript] = useState("");
+  const [inputTranscript, setInputTranscript] = useState('');
+  const [outputTranscript, setOutputTranscript] = useState('');
   const [agentSpeaking, setAgentSpeaking] = useState(false);
-  
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [sessionStarted, setSessionStarted] = useState(false);
+
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -50,29 +56,12 @@ export default function DebriefRoom({
   const scrollRef = useRef<HTMLDivElement>(null);
   const audioQueueRef = useRef<Float32Array[]>([]);
   const isPlayingRef = useRef(false);
-  const isRecordingRef = useRef(false);
-  
-  // Ref-based buffers to solve stale closure problems in the WebSocket handler
-  const messagesRef = useRef<Message[]>([]);
-  const inputTranscriptRef = useRef("");
-  const outputTranscriptRef = useRef("");
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
+  // Ref-based buffers to avoid stale closures
+  const outputTranscriptRef = useRef('');
 
-  useEffect(() => {
-    inputTranscriptRef.current = inputTranscript;
-  }, [inputTranscript]);
-
-  useEffect(() => {
-    outputTranscriptRef.current = outputTranscript;
-  }, [outputTranscript]);
-
-  // Sync ref with state for use in closures
-  useEffect(() => {
-    isRecordingRef.current = isRecording;
-  }, [isRecording]);
+  useEffect(() => { outputTranscriptRef.current = outputTranscript; }, [outputTranscript]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -83,11 +72,9 @@ export default function DebriefRoom({
   useEffect(() => {
     if (sessionId) {
       setMessages([]);
-      setInputTranscript("");
-      setOutputTranscript("");
-      messagesRef.current = [];
-      inputTranscriptRef.current = "";
-      outputTranscriptRef.current = "";
+      setInputTranscript('');
+      setOutputTranscript('');
+      outputTranscriptRef.current = '';
     }
   }, [sessionId]);
 
@@ -95,25 +82,39 @@ export default function DebriefRoom({
     if (autoStart && sessionId && !isConnected && !isConnecting) {
       startSession();
     }
-    return () => {
-      stopSession();
-    };
+    return () => { stopSession(); };
   }, [autoStart, sessionId]);
-  
-  // Pre-load audio worklet once
+
+  // Timer for elapsed session time
+  useEffect(() => {
+    if (isConnected) {
+      setSessionStarted(true);
+      setElapsedTime(0);
+      timerRef.current = setInterval(() => setElapsedTime(t => t + 1), 1000);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [isConnected]);
+
+  // Pre-load worklet
   useEffect(() => {
     const preLoad = async () => {
       try {
         const dummyCtx = new AudioContext();
         await dummyCtx.audioWorklet.addModule('/pcm-worklet.js');
         await dummyCtx.close();
-      } catch (e) {
-        console.error("Worklet pre-load failed:", e);
-      }
+      } catch (e) { console.error('Worklet pre-load failed:', e); }
     };
     preLoad();
   }, []);
-  
+
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const s = (secs % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
   const startSession = async () => {
     if (isConnected || isConnecting) return;
     setIsConnecting(true);
@@ -130,96 +131,72 @@ export default function DebriefRoom({
     ws.onmessage = async (event) => {
       const msg = JSON.parse(event.data);
 
-      if (msg.type === "history_sync") {
-        setMessages(msg.history);
-        if (msg.extracted_data) {
-          onExtractionUpdate(msg.extracted_data, msg.missing_fields);
-        }
+      if (msg.type === 'history_sync') {
+        const hist = (msg.history || []).map((h: any) => ({ ...h, timestamp: new Date() }));
+        setMessages(hist);
+        if (msg.extracted_data) onExtractionUpdate(msg.extracted_data, msg.missing_fields);
       }
 
-      if (msg.type === "input_transcript") {
-        setInputTranscript(msg.text || "");
+      if (msg.type === 'input_transcript') {
+        setInputTranscript(msg.text || '');
         if (msg.finished) {
-           setMessages(prev => [...prev, { role: 'user', text: msg.text }]);
-           setInputTranscript("");
+          setMessages(prev => [...prev, { role: 'user', text: msg.text, timestamp: new Date() }]);
+          setInputTranscript('');
         }
       }
 
-      if (msg.type === "output_transcript") {
+      if (msg.type === 'output_transcript') {
         setOutputTranscript(prev => {
-          // If the new text already contains the old text, it's cumulative - use it as is
           if (msg.text.length > prev.length && msg.text.startsWith(prev)) return msg.text;
-          // If it's a new fragment, append it with a space if needed
-          if (prev && !msg.text.startsWith(prev)) {
-             return prev + (prev.endsWith(" ") ? "" : " ") + msg.text;
-          }
+          if (prev && !msg.text.startsWith(prev)) return prev + (prev.endsWith(' ') ? '' : ' ') + msg.text;
           return msg.text;
         });
-        
-        if (msg.text && isRecording) setIsRecording(false);
         if (msg.finished) {
-           // Use the current accumulated value from the ref to avoid stale closure
-           setMessages(prev => [...prev, { role: 'agent', text: outputTranscriptRef.current || msg.text }]);
-           setOutputTranscript("");
+          setMessages(prev => [...prev, { role: 'agent', text: outputTranscriptRef.current || msg.text, timestamp: new Date() }]);
+          setOutputTranscript('');
         }
       }
 
-      if (msg.type === "audio") {
+      if (msg.type === 'audio') {
         const pcm16 = base64ToArrayBuffer(msg.data);
         playPcm24k(pcm16);
       }
 
-      if (msg.type === "interrupted") {
-        setOutputTranscript("");
+      if (msg.type === 'interrupted') {
+        setOutputTranscript('');
         setAgentSpeaking(false);
-        audioQueueRef.current = []; // Clear queued audio on barge-in
+        audioQueueRef.current = [];
       }
 
-      if (msg.type === "extraction_update") {
+      if (msg.type === 'extraction_update') {
         onExtractionUpdate(msg.extracted_data, msg.missing_fields);
       }
     };
 
-    ws.onclose = () => {
-      setIsConnected(false);
-      setIsConnecting(false);
-      stopMic();
-    };
-
-    ws.onerror = (err) => {
-      console.error("WS Error:", err);
-      setIsConnected(false);
-      setIsConnecting(false);
-    };
+    ws.onclose = () => { setIsConnected(false); setIsConnecting(false); stopMic(); };
+    ws.onerror = (err) => { console.error('WS Error:', err); setIsConnected(false); setIsConnecting(false); };
   };
 
   const startMic = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-
       const audioCtx = new AudioContext({ sampleRate: 16000 });
       audioCtxRef.current = audioCtx;
-
       await audioCtx.audioWorklet.addModule('/pcm-worklet.js');
       const worklet = new AudioWorkletNode(audioCtx, 'pcm-worklet');
       workletRef.current = worklet;
-
       const source = audioCtx.createMediaStreamSource(stream);
       sourceRef.current = source;
-
       worklet.port.onmessage = (e) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({
-            audio: arrayBufferToBase64(e.data)
-          }));
+          wsRef.current.send(JSON.stringify({ audio: arrayBufferToBase64(e.data) }));
         }
       };
-
       source.connect(worklet);
     } catch (err) {
-      console.error("Mic error:", err);
-      alert("Please ensure microphone permissions are granted.");
+      console.error('Mic error:', err);
+      alert('Please ensure microphone permissions are granted.');
     }
   };
 
@@ -230,54 +207,33 @@ export default function DebriefRoom({
     audioCtxRef.current?.close();
   };
 
-  const stopSession = () => {
-    wsRef.current?.close();
-    stopMic();
-    setIsConnected(false);
-  };
+  const stopSession = () => { wsRef.current?.close(); stopMic(); setIsConnected(false); };
 
   const playPcm24k = (buffer: ArrayBuffer) => {
     const pcm16 = new Int16Array(buffer);
     const float32 = new Float32Array(pcm16.length);
-    for (let i = 0; i < pcm16.length; i++) {
-      float32[i] = pcm16[i] / 32768;
-    }
-
+    for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768;
     audioQueueRef.current.push(float32 as any);
-    if (!isPlayingRef.current) {
-       processAudioQueue();
-    }
+    if (!isPlayingRef.current) processAudioQueue();
   };
 
   const processAudioQueue = async () => {
-    if (audioQueueRef.current.length === 0) {
-      isPlayingRef.current = false;
-      setAgentSpeaking(false);
-      return;
-    }
-
+    if (audioQueueRef.current.length === 0) { isPlayingRef.current = false; setAgentSpeaking(false); return; }
     isPlayingRef.current = true;
     setAgentSpeaking(true);
     const nextChunk = audioQueueRef.current.shift()!;
-    
-    // We need a stable AudioContext for playback if the mic one is closed or different
     const playbackCtx = audioCtxRef.current || new AudioContext({ sampleRate: 24000 });
-    
     const audioBuffer = playbackCtx.createBuffer(1, nextChunk.length, 24000);
     audioBuffer.copyToChannel(nextChunk as any, 0);
-
     const source = playbackCtx.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(playbackCtx.destination);
-    
-    source.onended = () => {
-       processAudioQueue();
-    };
+    source.onended = () => processAudioQueue();
     source.start();
   };
 
   const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
-    let binary = "";
+    let binary = '';
     const bytes = new Uint8Array(buffer);
     for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
     return btoa(binary);
@@ -290,155 +246,312 @@ export default function DebriefRoom({
     return bytes.buffer;
   };
 
+  const isEmpty = messages.length === 0 && !inputTranscript && !outputTranscript;
+
   return (
-    <div className="flex flex-col h-full items-center max-w-4xl mx-auto w-full p-6">
-      <div className="flex justify-between w-full items-center mb-8">
-        <div>
-          <h2 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">
-            Shunya Note Buddy <span className="text-sm font-normal text-slate-500 ml-2">v3.1 Live</span>
-          </h2>
-          <p className="text-sm text-slate-400 flex items-center gap-2 mt-1">
-             <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}`}></span>
-             {isConnected ? 'Live VAD Mode Active' : 'Disconnected'}
-          </p>
+    <div className="flex flex-col h-full" style={{ background: 'transparent' }}>
+      {/* Session status bar */}
+      <div className="flex items-center justify-between px-8 py-3 shrink-0" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+        <div className="flex items-center gap-3">
+          {/* Status indicator */}
+          <div className="flex items-center gap-2">
+            <div className={`status-dot ${isConnected ? 'active' : 'idle'}`} />
+            <span className="text-xs font-semibold tracking-widest uppercase"
+              style={{ color: isConnected ? '#10b981' : 'var(--text-muted)' }}>
+              {isConnecting ? 'Connecting...' : isConnected ? 'Session Live' : 'Ready'}
+            </span>
+          </div>
+
+          {isConnected && (
+            <motion.div initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
+              style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)', color: '#6ee7b7' }}>
+              <Clock className="w-3 h-3" />
+              {formatTime(elapsedTime)}
+            </motion.div>
+          )}
         </div>
-        <div className="flex gap-3">
-          <button 
+
+        <div className="flex items-center gap-2">
+          {isConnected && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+              className="flex items-center gap-1.5 text-xs font-medium mr-4"
+              style={{ color: agentSpeaking ? '#a5b4fc' : 'var(--text-muted)' }}>
+              <BrainCircuit className="w-3.5 h-3.5" />
+              {agentSpeaking ? 'AI responding...' : 'Listening...'}
+            </motion.div>
+          )}
+          <button
             onClick={() => onEndDebrief({}, messages)}
-            className="px-4 py-2 border border-slate-700 hover:bg-slate-800 rounded-xl transition-colors text-sm font-medium"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all"
+            style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}
           >
             End & Review
+            <ChevronRight className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      <div 
-        ref={scrollRef}
-        className="flex-1 w-full overflow-y-auto mb-8 pr-4 space-y-6 scrollbar-hide"
-      >
-        <AnimatePresence>
-          {messages.length === 0 && !inputTranscript && !outputTranscript && (
-            <motion.div 
-               initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-               className="h-full flex items-center justify-center text-center text-slate-500"
-            >
-               <div className="max-w-xs flex flex-col items-center gap-4">
-                 <div className="w-16 h-16 rounded-full bg-indigo-500/10 flex items-center justify-center border border-indigo-500/20">
-                    <Zap className="w-8 h-8 text-indigo-400" />
-                 </div>
-                 <p className="text-slate-400 italic">
-                   Click "Connect" to start the live debrief. <br/> 
-                   Gemini 3.1 will listen and respond in real-time.
-                 </p>
-               </div>
-            </motion.div>
-          )}
-
-          {messages.map((msg, i) => (
-            <motion.div 
-              key={i}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div className={`max-w-[80%] rounded-2xl p-4 ${
-                msg.role === 'user' 
-                  ? 'bg-indigo-600/20 text-indigo-100 border border-indigo-500/30' 
-                  : 'bg-slate-800 border border-slate-700 text-slate-200'
-              }`}>
-                <p className="text-lg leading-relaxed">{msg.text}</p>
-              </div>
-            </motion.div>
-          ))}
-
-          {inputTranscript && (
-            <motion.div 
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex w-full justify-end"
-            >
-              <div className="max-w-[80%] rounded-2xl p-4 bg-indigo-600/10 text-indigo-200/70 border border-indigo-500/20 italic">
-                <p className="text-lg leading-relaxed">{inputTranscript}...</p>
-              </div>
-            </motion.div>
-          )}
-
-          {outputTranscript && (
-            <motion.div 
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex w-full justify-start"
-            >
-              <div className="max-w-[80%] rounded-2xl p-4 bg-slate-800/50 border border-slate-700 text-slate-400 italic">
-                <p className="text-lg leading-relaxed">{outputTranscript}...</p>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      <div className="relative flex flex-col items-center gap-6">
-        {isConnected && (
-          <div className="flex gap-1 h-8 items-end">
-            {[...Array(12)].map((_, i) => (
-              <motion.div 
-                key={i}
-                animate={{ 
-                  height: agentSpeaking ? [8, 32, 12, 24, 8] : [4, 8, 4],
-                  opacity: agentSpeaking ? 1 : 0.3
-                }}
-                transition={{ 
-                  repeat: Infinity, 
-                  duration: 0.8, 
-                  delay: i * 0.05 
-                }}
-                className="w-1.5 bg-indigo-400 rounded-full"
-              />
-            ))}
-          </div>
-        )}
-
-        <div className="relative group">
-          <div className={`absolute -inset-4 bg-gradient-to-r ${isConnected ? 'from-red-500 to-orange-600' : 'from-indigo-500 to-purple-600'} rounded-full blur-xl opacity-20 group-hover:opacity-40 transition duration-500`}></div>
-          <button
-            onClick={isConnected ? stopSession : onStartSession}
-            disabled={isConnecting}
-            className={`relative z-10 w-24 h-24 rounded-full flex flex-col items-center justify-center transition-all transform hover:scale-105 shadow-2xl ${
-              !isConnected
-                ? 'bg-indigo-500 hover:bg-indigo-600 text-white'
-                : 'bg-red-500/10 border-2 border-red-500 text-red-500'
-            }`}
-          >
-            {!isConnected ? (
-              <>
-                {isConnecting ? (
-                  <div className="w-8 h-8 rounded-full border-2 border-white/30 border-t-white animate-spin"></div>
-                ) : (
-                  <>
-                    <Play className="w-10 h-10 ml-1" />
-                    <span className="text-[10px] font-bold mt-1">CONNECT</span>
-                  </>
+      {/* Message feed + talk button layout */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Message area */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-hide px-6 py-6 space-y-4">
+          <AnimatePresence>
+            {isEmpty && (
+              <motion.div
+                key="empty"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="h-full flex flex-col items-center justify-center text-center py-16"
+              >
+                <div className="relative mb-8">
+                  {/* Decorative rings */}
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-48 h-48 rounded-full border border-indigo-500/10 animate-ring-spin" />
+                  </div>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-36 h-36 rounded-full border border-purple-500/10 animate-ring-reverse" />
+                  </div>
+                  <div className="relative w-24 h-24 mx-auto rounded-full flex items-center justify-center"
+                    style={{
+                      background: 'radial-gradient(circle, rgba(99,102,241,0.2) 0%, rgba(99,102,241,0.05) 100%)',
+                      border: '1px solid rgba(99,102,241,0.2)',
+                      boxShadow: '0 0 40px rgba(99,102,241,0.15)'
+                    }}>
+                    <Mic className="w-10 h-10 text-indigo-400" />
+                  </div>
+                </div>
+                <h3 className="text-xl font-semibold text-white mb-3 font-['Space_Grotesk']">
+                  {sessionId ? 'Ready to Debrief' : 'Start a New Session'}
+                </h3>
+                <p className="text-sm leading-relaxed max-w-sm" style={{ color: 'var(--text-muted)' }}>
+                  {sessionId
+                    ? 'Press Connect to begin. Gemini will listen, transcribe, and extract CRM data in real-time.'
+                    : 'Click the Connect button below to create a session and start the AI-powered debrief.'}
+                </p>
+                {sessionId && (
+                  <div className="mt-6 flex items-center gap-3">
+                    {['VAD Detection', 'Live Transcription', 'CRM Extraction'].map((f, i) => (
+                      <motion.div key={f} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.1 + 0.3 }}
+                        className="tag tag-indigo">{f}</motion.div>
+                    ))}
+                  </div>
                 )}
-              </>
-            ) : (
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Messages */}
+          <AnimatePresence initial={false}>
+            {messages.map((msg, i) => (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              >
+                {msg.role === 'agent' && (
+                  <div className="w-7 h-7 rounded-lg mr-2.5 mt-0.5 shrink-0 flex items-center justify-center"
+                    style={{ background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.2)' }}>
+                    <BrainCircuit className="w-3.5 h-3.5 text-indigo-400" />
+                  </div>
+                )}
+                <div className={`max-w-[72%] rounded-2xl px-5 py-3.5 ${msg.role === 'user'
+                  ? 'rounded-tr-sm'
+                  : 'rounded-tl-sm'
+                  }`}
+                  style={msg.role === 'user' ? {
+                    background: 'linear-gradient(135deg, rgba(99,102,241,0.2), rgba(139,92,246,0.15))',
+                    border: '1px solid rgba(99,102,241,0.2)',
+                    color: '#e0e7ff'
+                  } : {
+                    background: 'rgba(255,255,255,0.04)',
+                    border: '1px solid rgba(255,255,255,0.07)',
+                    color: 'var(--text-primary)'
+                  }}>
+                  <p className="text-sm leading-relaxed">{msg.text}</p>
+                  {msg.timestamp && (
+                    <p className="text-[10px] mt-1.5 opacity-40 font-medium">
+                      {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  )}
+                </div>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+
+          {/* Live input transcript (user speaking) */}
+          <AnimatePresence>
+            {inputTranscript && (
+              <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                className="flex w-full justify-end">
+                <div className="max-w-[72%] rounded-2xl rounded-tr-sm px-5 py-3.5"
+                  style={{ background: 'rgba(99,102,241,0.08)', border: '1px dashed rgba(99,102,241,0.25)', color: 'rgba(165,180,252,0.7)' }}>
+                  <p className="text-sm leading-relaxed italic">{inputTranscript}
+                    <span className="inline-block ml-1 w-0.5 h-3.5 bg-indigo-400 animate-pulse rounded-sm align-text-bottom" />
+                  </p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Live output transcript (agent speaking) */}
+          <AnimatePresence>
+            {outputTranscript && (
+              <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                className="flex w-full justify-start">
+                <div className="w-7 h-7 rounded-lg mr-2.5 mt-0.5 shrink-0 flex items-center justify-center"
+                  style={{ background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.25)' }}>
+                  <BrainCircuit className="w-3.5 h-3.5 text-purple-400" />
+                </div>
+                <div className="max-w-[72%] rounded-2xl rounded-tl-sm px-5 py-3.5"
+                  style={{ background: 'rgba(255,255,255,0.03)', border: '1px dashed rgba(255,255,255,0.1)', color: 'var(--text-secondary)' }}>
+                  <p className="text-sm leading-relaxed italic">{outputTranscript}
+                    <span className="inline-block ml-1 w-0.5 h-3.5 bg-purple-400 animate-pulse rounded-sm align-text-bottom" />
+                  </p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* ── Talk Button Area ──────────────────────────────── */}
+        <div className="shrink-0 flex flex-col items-center pb-10 pt-6 px-8 relative">
+          {/* Waveform visualizer */}
+          <div className="mb-6 flex items-center justify-center gap-1 h-10">
+            {Array.from({ length: WAVEFORM_BARS }).map((_, i) => {
+              const delay = (i / WAVEFORM_BARS) * 0.8;
+              const duration = 0.5 + Math.random() * 0.6;
+              return (
+                <motion.div
+                  key={i}
+                  className="waveform-bar"
+                  style={agentSpeaking ? { '--duration': `${duration}s`, '--delay': `${delay}s` } as any : undefined}
+                  animate={isConnected ? {
+                    scaleY: agentSpeaking
+                      ? [0.2, 0.4 + Math.random() * 0.8, 0.2]
+                      : [0.15, 0.3, 0.15],
+                    opacity: agentSpeaking ? 1 : 0.3,
+                  } : { scaleY: 0.15, opacity: 0.12 }}
+                  transition={{
+                    repeat: Infinity,
+                    duration: agentSpeaking ? 0.5 + (i % 5) * 0.08 : 1.5,
+                    delay: i * 0.04,
+                    ease: 'easeInOut',
+                  }}
+                />
+              );
+            })}
+          </div>
+
+          {/* THE Talk Button */}
+          <div className="relative flex items-center justify-center">
+            {/* Outer glow ring — only when connected */}
+            {isConnected && (
               <>
-                <Square className="w-8 h-8 fill-current" />
-                <span className="text-[10px] font-bold mt-1">STOP</span>
+                <motion.div
+                  className={`absolute rounded-full ${agentSpeaking ? 'animate-glow-danger' : 'animate-glow-breathe'}`}
+                  style={{
+                    width: 180,
+                    height: 180,
+                    background: agentSpeaking
+                      ? 'radial-gradient(circle, rgba(239,68,68,0.15) 0%, transparent 70%)'
+                      : 'radial-gradient(circle, rgba(99,102,241,0.2) 0%, transparent 70%)',
+                  }}
+                />
+                {/* Spinning dashed ring */}
+                <motion.div
+                  className="absolute rounded-full animate-ring-spin"
+                  style={{
+                    width: 148,
+                    height: 148,
+                    border: `2px dashed ${agentSpeaking ? 'rgba(239,68,68,0.25)' : 'rgba(99,102,241,0.2)'}`,
+                  }}
+                />
+                <motion.div
+                  className="absolute rounded-full animate-ring-reverse"
+                  style={{
+                    width: 164,
+                    height: 164,
+                    border: `1px solid ${agentSpeaking ? 'rgba(239,68,68,0.12)' : 'rgba(139,92,246,0.15)'}`,
+                  }}
+                />
               </>
             )}
-          </button>
-        </div>
 
-        <div className="flex items-center gap-4 text-xs font-medium uppercase tracking-widest text-slate-500">
-           {isConnected ? (
-             <span className="flex items-center gap-2 text-green-500">
-               <Activity className="w-3 h-3" /> System Live
-             </span>
-           ) : (
-             <span className="flex items-center gap-2">
-               <Info className="w-3 h-3" /> Ready to sync
-             </span>
-           )}
+            {/* Main button */}
+            <button
+              onClick={isConnected ? stopSession : onStartSession}
+              disabled={isConnecting}
+              className="relative z-10 flex flex-col items-center justify-center transition-all duration-300"
+              style={{
+                width: 120,
+                height: 120,
+                borderRadius: '50%',
+                background: isConnecting
+                  ? 'rgba(99,102,241,0.1)'
+                  : isConnected
+                  ? 'radial-gradient(circle at 40% 35%, rgba(239,68,68,0.25), rgba(220,38,38,0.1))'
+                  : 'radial-gradient(circle at 40% 35%, rgba(99,102,241,0.4), rgba(99,102,241,0.15))',
+                border: `2px solid ${isConnected ? 'rgba(239,68,68,0.5)' : 'rgba(99,102,241,0.5)'}`,
+                boxShadow: isConnected
+                  ? '0 0 0 1px rgba(239,68,68,0.1), inset 0 1px 1px rgba(255,255,255,0.05)'
+                  : '0 0 0 1px rgba(99,102,241,0.1), inset 0 1px 1px rgba(255,255,255,0.08)',
+                transform: isConnecting ? 'scale(0.95)' : 'scale(1)',
+              }}
+            >
+              {/* Inner icon area */}
+              <div className="relative flex flex-col items-center gap-1.5">
+                {isConnecting ? (
+                  <>
+                    <div className="w-10 h-10 rounded-full border-2 border-indigo-400/30 border-t-indigo-400 animate-spin" />
+                    <span className="text-[9px] font-bold tracking-[0.15em] uppercase text-indigo-400 mt-0.5">Connecting</span>
+                  </>
+                ) : isConnected ? (
+                  <>
+                    <Square className="w-8 h-8 fill-red-400 text-red-400" />
+                    <span className="text-[9px] font-bold tracking-[0.15em] uppercase text-red-400">End</span>
+                  </>
+                ) : (
+                  <>
+                    {/* Mic icon with pulse ring */}
+                    <div className="relative">
+                      <Play className="w-9 h-9 text-indigo-300 fill-indigo-300 ml-1" />
+                    </div>
+                    <span className="text-[9px] font-bold tracking-[0.15em] uppercase text-indigo-300">Connect</span>
+                  </>
+                )}
+              </div>
+            </button>
+          </div>
+
+          {/* Status label below button */}
+          <div className="mt-5 flex items-center gap-2.5 text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
+            {isConnected ? (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                className="flex items-center gap-2">
+                <span className="flex items-center gap-1.5">
+                  <Activity className="w-3 h-3 text-emerald-500" />
+                  <span className="text-emerald-500 tracking-wider uppercase text-[10px] font-bold">System Live</span>
+                </span>
+                <span className="text-slate-700">·</span>
+                <span className="flex items-center gap-1 text-slate-500 text-[10px] uppercase tracking-wider">
+                  {agentSpeaking ? (
+                    <><span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />AI Speaking</>
+                  ) : (
+                    <><Mic className="w-3 h-3" /> Listening</>
+                  )}
+                </span>
+              </motion.div>
+            ) : (
+              <span className="text-[10px] uppercase tracking-[0.15em]">
+                {isConnecting ? 'Establishing secure connection...' : 'Click to begin live debrief session'}
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </div>
