@@ -62,19 +62,32 @@ def save_crm_data(
     flight_risk: str = None,
     macro_concerns: list[str] = None,
     next_steps: str = None,
-    extensive_notes: str = None
+    extensive_notes: str = None,
+    # GQG Leadership Priority Topics
+    us_equity_etf_interest: str = None,
+    intl_em_interest: str = None,
+    alpha_badger_mention: str = None,
+    tech_approach_interest: str = None,
+    ai_outlook_discussed: str = None,
+    oil_energy_discussed: str = None,
 ):
     data = {
-        "client_type": client_type,
-        "portfolio_sentiment": portfolio_sentiment,
-        "flight_risk": flight_risk,
-        "macro_concerns": macro_concerns,
-        "next_steps": next_steps,
-        "extensive_notes": extensive_notes
+        "client_type":           client_type,
+        "portfolio_sentiment":   portfolio_sentiment,
+        "flight_risk":           flight_risk,
+        "macro_concerns":        macro_concerns,
+        "next_steps":            next_steps,
+        "extensive_notes":       extensive_notes,
+        "us_equity_etf_interest": us_equity_etf_interest,
+        "intl_em_interest":      intl_em_interest,
+        "alpha_badger_mention":  alpha_badger_mention,
+        "tech_approach_interest": tech_approach_interest,
+        "ai_outlook_discussed":  ai_outlook_discussed,
+        "oil_energy_discussed":  oil_energy_discussed,
     }
     return {k: v for k, v in data.items() if v is not None}
 
-async def stream_gemini_live(user_ws, session_id, on_extraction, on_message_completed, history=None):
+async def stream_gemini_live(user_ws, session_id, on_extraction, on_message_completed, history=None, client_context=None):
     from asyncio import Queue
     from fastapi import WebSocketDisconnect
     
@@ -89,6 +102,42 @@ async def stream_gemini_live(user_ws, session_id, on_extraction, on_message_comp
     }
 
     async def get_config():
+        # ── Resolve client context ────────────────────────────────────────
+        client_name     = (client_context or {}).get("name", "the client")
+        client_type     = (client_context or {}).get("type", "institutional")
+        strategy_focus  = (client_context or {}).get("strategy_focus", "us")
+
+        cross_sell_q = (
+            "Interest in International & Emerging Markets products (since this is a US strategy client)?"
+            if strategy_focus == "us"
+            else "Interest in US strategy products (since this is an international-focused client)?"
+        )
+
+        system_prompt = (
+            f"You are a meticulous junior analyst at GQG Partners, debriefing a senior salesperson after their client meeting.\n\n"
+            f"CLIENT CONTEXT (ALREADY KNOWN — DO NOT ASK THE SALESPERSON TO CONFIRM):\n"
+            f"- Client Name: {client_name}\n"
+            f"- Client Type: {client_type.capitalize()} ← This is a KNOWN FACT. NEVER ask whether the client is retail or institutional.\n"
+            f"- Strategy Focus: {'US Strategies' if strategy_focus == 'us' else 'International / EM'}\n\n"
+            f"YOUR MISSION:\n"
+            f"Capture comprehensive CRM data AND specifically probe for GQG Leadership's 6 priority questions if they haven't come up naturally.\n\n"
+            f"GQG LEADERSHIP PRIORITY QUESTIONS (ensure all are addressed before wrapping up):\n"
+            f"1. Interest in GQG's US Equity ETF product?\n"
+            f"2. {cross_sell_q}\n"
+            f"3. Any mention of Alpha Badger (GQG's new flagship offering)?\n"
+            f"4. Interest in GQG's approach to technology?\n"
+            f"5. GQG's outlook on AI — was it discussed?\n"
+            f"6. GQG's view on oil and energy — was it discussed?\n\n"
+            f"RULES:\n"
+            f"1. NEVER ask about client type — it is already known as {client_type}.\n"
+            f"2. INCREMENTAL UPDATES: Call 'save_crm_data' immediately as you extract any information.\n"
+            f"3. NO HALLUCINATIONS: Only record what was actually mentioned. Omit fields that haven't been discussed.\n"
+            f"4. EXTENSIVE NOTES: Maintain 'extensive_notes' as a cumulative, detailed record of the entire debrief.\n"
+            f"5. PERSISTENCE: Do NOT end the session until all 6 GQG priority questions have been addressed.\n"
+            f"6. PERSONA: Be inquisitive, professional, and collaborative. You work for GQG. The salesperson just met with {client_name}.\n"
+            f"7. After every 'save_crm_data' call, briefly acknowledge what was recorded and ask the next question."
+        )
+
         return {
             "tools": [{
                 "function_declarations": [{
@@ -97,30 +146,26 @@ async def stream_gemini_live(user_ws, session_id, on_extraction, on_message_comp
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
-                            "client_type": {"type": "string", "description": "Retail or Institutional. Omit if unknown."},
-                            "portfolio_sentiment": {"type": "string", "description": "Client's feeling on portfolio. Omit if unknown."},
-                            "flight_risk": {"type": "string", "description": "Risk level (Low/Medium/High). Omit if unknown."},
-                            "macro_concerns": {"type": "array", "items": {"type": "string"}, "description": "Specific rants or concerns. Omit if none."},
-                            "next_steps": {"type": "string", "description": "Next actions. Omit if unknown."},
-                            "extensive_notes": {"type": "string", "description": "DETAILED, comprehensive notes about the conversation so far."}
+                            # Standard CRM
+                            "client_type":          {"type": "string", "description": "Retail or Institutional. Already known — only set if salesperson corrects it."},
+                            "portfolio_sentiment":  {"type": "string", "description": "Client's feeling on portfolio. Omit if unknown."},
+                            "flight_risk":          {"type": "string", "description": "Risk level (Low/Medium/High). Omit if unknown."},
+                            "macro_concerns":       {"type": "array", "items": {"type": "string"}, "description": "Specific macro concerns. Omit if none."},
+                            "next_steps":           {"type": "string", "description": "Next actions. Omit if unknown."},
+                            "extensive_notes":      {"type": "string", "description": "DETAILED, cumulative notes about the full conversation."},
+                            # GQG Priority Topics
+                            "us_equity_etf_interest":  {"type": "string", "description": "Client's interest in GQG's US Equity ETF product. E.g. 'Highly interested', 'Not discussed', 'Skeptical'."},
+                            "intl_em_interest":         {"type": "string", "description": f"Client's interest in {'International & EM' if strategy_focus == 'us' else 'US strategies'}. Omit if not discussed."},
+                            "alpha_badger_mention":     {"type": "string", "description": "Any mention of Alpha Badger. Include what was said. Omit if not mentioned."},
+                            "tech_approach_interest":  {"type": "string", "description": "Client's interest in GQG's tech approach. Omit if not discussed."},
+                            "ai_outlook_discussed":    {"type": "string", "description": "Whether GQG's AI outlook was discussed and what the client said."},
+                            "oil_energy_discussed":    {"type": "string", "description": "Whether GQG's oil & energy view was discussed and what the client said."},
                         }
                     }
                 }]
             }],
             "system_instruction": {
-                "parts": [{"text": (
-                    "You are a meticulous junior analyst at a boutique equities firm, debriefing a senior salesperson. "
-                    "Your MISSION is to capture EVERY detail of the salesperson's report in real-time. "
-                    "\n\n"
-                    "RULES:\n"
-                    "1. INCREMENTAL UPDATES: Call 'save_crm_data' IMMEDIATELY as soon as you extract any piece of information (e.g. client type, a concern, a next step). Do NOT wait for the end of the conversation.\n"
-                    "2. NO HALLUCINATIONS: Do NOT use 'Unknown', 'N/A', 'Placeholder', or dummy values. If a field hasn't been discussed yet, omit it from the 'save_crm_data' call. Only provide fields you have high confidence in.\n"
-                    "3. EXTENSIVE NOTES: Maintain 'extensive_notes' as a living, cumulative record. Whenever you learn something new, call 'save_crm_data' and include the LATEST, complete version of the notes. These notes should be multi-paragraph, detailed, and capture nuances, rants, and specific quotes if possible. "
-                    "4. APPEND DON'T REPLACE: If you learn more details about a field (like macro concerns), append them to the existing list instead of replacing the whole list if it remains relevant.\n"
-                    "5. PERSONA: Be inquisitive, professional, and respectful. Ask follow-up questions to fill in the gaps in the CRM fields.\n"
-                    "6. VERBAL ACKNOWLEDGEMENT: After every 'save_crm_data' call, you MUST briefly verbally acknowledge the data recorded (e.g., 'Got it, a retail client.') and then ask the next question.\n"
-                    "7. PERSISTENCE: Do NOT end the conversation or stop asking questions until ALL fields (client_type, portfolio_sentiment, flight_risk, macro_concerns, next_steps) have been discussed and recorded."
-                )}]
+                "parts": [{"text": system_prompt}]
             },
             "generation_config": {
                 "response_modalities": ["AUDIO"],

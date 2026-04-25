@@ -484,7 +484,7 @@ export default function DebriefRoom({
 
             {/* Main button */}
             <button
-              onClick={isConnected ? stopSession : onStartSession}
+              onClick={isConnected ? stopSession : (sessionId ? startSession : onStartSession)}
               disabled={isConnecting}
               className="relative z-10 flex flex-col items-center justify-center transition-all duration-300"
               style={{

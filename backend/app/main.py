@@ -4,6 +4,7 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 import asyncio
 import base64
 from dotenv import load_dotenv
@@ -53,8 +54,15 @@ async def login(email: str, password: str):
 async def get_me(user = Depends(get_current_user)):
     return {"status": "success", "user": user}
 
+class SessionCreateRequest(BaseModel):
+    client_id: Optional[str] = None
+    client_name: Optional[str] = None
+    client_type: Optional[str] = None           # 'retail' | 'institutional'
+    client_strategy_focus: Optional[str] = None # 'us' | 'international'
+    client_region: Optional[str] = None
+
 @app.post("/api/debrief/session")
-async def create_session(user = Depends(get_current_user)):
+async def create_session(body: SessionCreateRequest = SessionCreateRequest(), user = Depends(get_current_user)):
     try:
         # Create a new session record in Supabase
         res = supabase.table("sessions").insert({
@@ -62,7 +70,32 @@ async def create_session(user = Depends(get_current_user)):
         }).execute()
         if not res.data:
             raise HTTPException(status_code=500, detail="Failed to create session")
-        return {"status": "success", "session_id": res.data[0]["id"]}
+        session_id = res.data[0]["id"]
+
+        # Build client context from request body
+        client_context = {
+            "id":             body.client_id,
+            "name":           body.client_name or "the client",
+            "type":           body.client_type or "institutional",
+            "strategy_focus": body.client_strategy_focus or "us",
+            "region":         body.client_region,
+        }
+
+        # Pre-seed session in memory with client context and pre-populated client_type
+        all_fields = list(SalesDebriefData.model_fields.keys())
+        pre_extracted = {}
+        if body.client_type:
+            pre_extracted["client_type"] = body.client_type.capitalize()
+        missing = [f for f in all_fields if f not in pre_extracted or not pre_extracted[f]]
+
+        sessions[session_id] = {
+            "extracted_data": pre_extracted,
+            "missing_fields": missing,
+            "history": [],
+            "client_context": client_context,
+        }
+
+        return {"status": "success", "session_id": session_id}
     except Exception as e:
         print(f"Session Creation Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -169,11 +202,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str, token: str =
 
     try:
         await stream_gemini_live(
-            websocket, 
-            session_id, 
-            on_extraction_update, 
+            websocket,
+            session_id,
+            on_extraction_update,
             on_message_completed,
-            state["history"]
+            state["history"],
+            client_context=state.get("client_context"),
         )
     except WebSocketDisconnect:
         print(f"Client disconnected: {session_id}")
